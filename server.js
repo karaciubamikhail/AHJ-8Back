@@ -1,93 +1,85 @@
-import http from "http";
-import express from "express";
-import WebSocket, { WebSocketServer } from "ws";
-import cors from "cors";
-import bodyParser from "body-parser";
-import * as crypto from "crypto";
-
-const app = express();
+const http = require('http');
+const Koa = require('koa');
+const koaBody = require('koa-body');
+const WebSocket = require('ws');
+const {
+   uuid
+} = require('uuidv4');
+const cors = require('@koa/cors');
+const {
+   cli
+} = require('forever');
+const app = new Koa();
+const port = process.env.PORT || 8080;
 
 app.use(cors());
-app.use(
-  bodyParser.json({
-    type(req) {
-      return true;
-    },
-  })
-);
-app.use((req, res, next) => {
-  res.setHeader("Content-Type", "application/json");
-  next();
+app.use(koaBody({
+   urlencoded: true,
+   multipart: true,
+   json: true,
+}));
+
+
+const clients = [];
+let indexIcon = 9;
+
+const server = http.createServer(app.callback());
+
+const wsServer = new WebSocket.Server({
+   server
+});
+wsServer.on('connection', (ws) => {
+   const id = uuid();
+   const client = {};
+   client.id = id;
+   indexIcon -= 1;
+   if (indexIcon === -1) {
+      indexIcon = 9;
+   }
+   client.idIcon = indexIcon;
+   ws.on('message', (msg) => {
+      const data = JSON.parse(msg);
+      if (data.type === 'add') {
+         const nameIndex = clients.findIndex(item => item.name === data.name);
+         if (nameIndex !== -1) {
+            ws.send(JSON.stringify({
+               type: 'err name use'
+            }));
+         }
+         if (nameIndex === -1) {
+            client.name = data.name;
+            clients.push(client);
+            ws.send(JSON.stringify({
+               type: 'create account',
+               id: client.id,
+            }));
+            wsServer.clients.forEach(item => {
+               item.send(JSON.stringify({
+                  type: "new conection",
+                  data: clients,
+                  newClient: client.name,
+               }));
+            });
+         }
+      }
+      if (data.type === 'new message') {
+         const indClient = clients.findIndex(item => item.id === data.id);
+         data.name = clients[indClient].name;
+         wsServer.clients.forEach(item => item.send(JSON.stringify(data)));
+      }
+   });
+
+   ws.on('close', () => {
+      const indexArr = clients.findIndex(item => item.id === client.id);
+      clients.splice(indexArr, 1);
+      if (client.name !== null) {
+         wsServer.clients.forEach(item => item.send(JSON.stringify({
+            type: 'user disconected',
+            name: client.name,
+            data: clients,
+         })));
+      }
+   });
 });
 
-const userState = [];
-app.post("/new-user", async (request, response) => {
-  if (Object.keys(request.body).length === 0) {
-    const result = {
-      status: "error",
-      message: "This name is already taken!",
-    };
-    response.status(400).send(JSON.stringify(result)).end();
-  }
-  const { name } = request.body;
-  const isExist = userState.find((user) => user.name === name);
-  if (!isExist) {
-    const newUser = {
-      id: crypto.randomUUID(),
-      name: name,
-    };
-    userState.push(newUser);
-    const result = {
-      status: "ok",
-      user: newUser,
-    };
-    response.send(JSON.stringify(result)).end();
-  } else {
-    const result = {
-      status: "error",
-      message: "This name is already taken!",
-    };
-    response.status(409).send(JSON.stringify(result)).end();
-  }
-});
-
-const server = http.createServer(app);
-const wsServer = new WebSocketServer({ server });
-wsServer.on("connection", (ws) => {
-  ws.on("message", (msg, isBinary) => {
-    const receivedMSG = JSON.parse(msg);
-    console.dir(receivedMSG);
-    if (receivedMSG.type === "exit") {
-      const idx = userState.findIndex(
-        (user) => user.name === receivedMSG.user.name
-      );
-      userState.splice(idx, 1);
-      [...wsServer.clients]
-        .filter((o) => o.readyState === WebSocket.OPEN)
-        .forEach((o) => o.send(JSON.stringify(userState)));
-      return;
-    }
-    if (receivedMSG.type === "send") {
-      [...wsServer.clients]
-        .filter((o) => o.readyState === WebSocket.OPEN)
-        .forEach((o) => o.send(msg, { binary: isBinary }));
-    }
-  });
-  [...wsServer.clients]
-    .filter((o) => o.readyState === WebSocket.OPEN)
-    .forEach((o) => o.send(JSON.stringify(userState)));
-});
-
-const port = process.env.PORT || 3000;
-
-const bootstrap = async () => {
-  try {
-    server.listen(port, () =>
-      console.log(`Server has been started on http://localhost:${port}`)
-    );
-  } catch (error) {
-    console.error(error);
-  }
-};
-
-bootstrap();
+server.listen(port);
